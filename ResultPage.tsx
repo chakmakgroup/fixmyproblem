@@ -1,0 +1,304 @@
+import { useEffect, useState } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import { FileText, Download, Check, Lock, Sparkles, ArrowRight } from 'lucide-react';
+import { documentService } from '../services/documentService';
+import { Document } from '../lib/supabase';
+import { createCheckoutSession } from '../lib/stripe';
+import { singleLetterProduct } from '../stripe-config';
+
+export function ResultPage() {
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const [document, setDocument] = useState<Document | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [generating, setGenerating] = useState(false);
+  const [paymentLoading, setPaymentLoading] = useState(false);
+
+  useEffect(() => {
+    if (!id) {
+      navigate('/');
+      return;
+    }
+
+    loadDocument();
+  }, [id]);
+
+  const loadDocument = async () => {
+    try {
+      const doc = await documentService.getDocument(id!);
+      if (!doc) {
+        navigate('/');
+        return;
+      }
+
+      setDocument(doc);
+
+      if (doc.status === 'generating' || doc.status === 'draft') {
+        setGenerating(true);
+        pollForCompletion(doc.id);
+      } else {
+        setLoading(false);
+      }
+    } catch (error) {
+      console.error('Error loading document:', error);
+      navigate('/');
+    }
+  };
+
+  const pollForCompletion = async (docId: string) => {
+    const maxAttempts = 60;
+    let attempts = 0;
+
+    const poll = setInterval(async () => {
+      attempts++;
+
+      try {
+        const doc = await documentService.getDocument(docId);
+
+        if (doc?.status === 'generated') {
+          setDocument(doc);
+          setGenerating(false);
+          setLoading(false);
+          clearInterval(poll);
+        } else if (attempts >= maxAttempts) {
+          clearInterval(poll);
+          setGenerating(false);
+          setLoading(false);
+          alert('Generation is taking longer than expected. Please refresh the page.');
+        }
+      } catch (error) {
+        console.error('Error polling document:', error);
+        clearInterval(poll);
+        setGenerating(false);
+        setLoading(false);
+      }
+    }, 2000);
+  };
+
+  const handleUnlockPayment = async () => {
+    if (!document) return;
+
+    setPaymentLoading(true);
+
+    try {
+      const product = singleLetterProduct;
+      const { url } = await createCheckoutSession({
+        price_id: product.priceId,
+        success_url: `${window.location.origin}/success?session_id={CHECKOUT_SESSION_ID}&document_id=${document.id}`,
+        cancel_url: window.location.href,
+        mode: product.mode,
+      });
+
+      if (url) {
+        window.location.href = url;
+      }
+    } catch (error) {
+      console.error('Payment error:', error);
+      alert('Failed to initiate payment. Please try again.');
+      setPaymentLoading(false);
+    }
+  };
+
+  if (loading || generating) {
+    return (
+      <div className="min-h-screen bg-[#07111F] text-[#F8FAFC] flex items-center justify-center">
+        <div className="fixed inset-0 pointer-events-none overflow-hidden">
+          <div className="absolute top-0 left-1/4 w-96 h-96 bg-[#4F7DF3]/10 rounded-full blur-[120px] animate-glow-pulse"></div>
+        </div>
+
+        <div className="relative text-center max-w-md mx-auto px-4">
+          <div className="w-24 h-24 mx-auto mb-8 relative">
+            <div className="absolute inset-0 bg-gradient-to-br from-[#4F7DF3] to-[#14B8A6] rounded-full animate-pulse"></div>
+            <div className="absolute inset-2 bg-[#07111F] rounded-full flex items-center justify-center">
+              <Sparkles className="w-12 h-12 text-[#4F7DF3] animate-spin" style={{ animationDuration: '3s' }} />
+            </div>
+          </div>
+
+          <h2 className="text-3xl font-bold mb-4">Crafting your letter...</h2>
+          <p className="text-[#CBD5E1] mb-8">
+            Our AI is writing a professional, legally-formatted complaint letter
+          </p>
+
+          <div className="bg-white/6 border border-white/8 rounded-xl p-6 space-y-4">
+            <div className="flex items-center gap-3 animate-fade-in">
+              <div className="w-2 h-2 bg-[#14B8A6] rounded-full animate-pulse"></div>
+              <span className="text-sm text-[#CBD5E1]">Analysing your case</span>
+            </div>
+            <div className="flex items-center gap-3 animate-fade-in" style={{ animationDelay: '0.5s' }}>
+              <div className="w-2 h-2 bg-[#14B8A6] rounded-full animate-pulse"></div>
+              <span className="text-sm text-[#CBD5E1]">Structuring your letter</span>
+            </div>
+            <div className="flex items-center gap-3 animate-fade-in" style={{ animationDelay: '1s' }}>
+              <div className="w-2 h-2 bg-[#14B8A6] rounded-full animate-pulse"></div>
+              <span className="text-sm text-[#CBD5E1]">Adding key legal points</span>
+            </div>
+            <div className="flex items-center gap-3 animate-fade-in" style={{ animationDelay: '1.5s' }}>
+              <div className="w-2 h-2 bg-[#14B8A6] rounded-full animate-pulse"></div>
+              <span className="text-sm text-[#CBD5E1]">Preparing final draft</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!document) return null;
+
+  const letterLines = document.generated_text?.split('\n') || [];
+  const visibleLines = letterLines.slice(0, Math.min(8, letterLines.length));
+  const hiddenLines = letterLines.slice(Math.min(8, letterLines.length));
+
+  return (
+    <div className="min-h-screen bg-[#07111F] text-[#F8FAFC]">
+      <div className="fixed inset-0 pointer-events-none overflow-hidden">
+        <div className="absolute top-0 left-1/4 w-96 h-96 bg-[#4F7DF3]/10 rounded-full blur-[120px] animate-glow-pulse"></div>
+      </div>
+
+      <header className="relative backdrop-blur-lg bg-[#0D1728]/80 border-b border-white/8">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex justify-between items-center py-4">
+            <button onClick={() => navigate('/')} className="flex items-center gap-2">
+              <div className="w-8 h-8 bg-gradient-to-br from-[#4F7DF3] to-[#14B8A6] rounded-lg flex items-center justify-center">
+                <FileText className="w-5 h-5 text-white" />
+              </div>
+              <span className="text-xl font-bold">FixMyProblem</span>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main className="relative py-12 px-4 sm:px-6 lg:px-8">
+        <div className="max-w-4xl mx-auto">
+          <div className="mb-8 text-center animate-fade-in-up">
+            <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[#14B8A6]/10 border border-[#14B8A6]/20 mb-4">
+              <Check className="w-4 h-4 text-[#14B8A6]" />
+              <span className="text-sm text-[#14B8A6] font-medium">Generated for your case</span>
+            </div>
+            <h1 className="text-3xl sm:text-4xl font-bold mb-2">
+              Your letter is ready
+            </h1>
+            <p className="text-lg text-[#CBD5E1]">
+              Professional UK format • Ready in under 2 minutes
+            </p>
+          </div>
+
+          <div className="relative mb-8">
+            <div className="bg-white rounded-2xl shadow-2xl p-8 sm:p-12 text-gray-900 document-card overflow-hidden">
+              <div style={{ fontFamily: 'Georgia, serif', lineHeight: '1.7', fontSize: '15px' }}>
+                <div className="space-y-2">
+                  {visibleLines.map((line, i) => (
+                    <div key={i}>{line || <br />}</div>
+                  ))}
+                </div>
+
+                {hiddenLines.length > 0 && (
+                  <div className="relative mt-4">
+                    <div className="blur-[8px] select-none pointer-events-none opacity-60">
+                      {hiddenLines.map((line, i) => (
+                        <div key={i}>{line || <br />}</div>
+                      ))}
+                    </div>
+                    <div className="absolute inset-0 bg-gradient-to-b from-transparent via-white/50 to-white animate-shimmer"></div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <div className="bg-[#07111F]/95 backdrop-blur-sm border-2 border-[#4F7DF3]/30 rounded-3xl p-8 sm:p-12 max-w-md pointer-events-auto shadow-2xl animate-fade-in">
+                <div className="text-center space-y-6">
+                  <div className="w-16 h-16 mx-auto bg-gradient-to-br from-[#4F7DF3] to-[#14B8A6] rounded-full flex items-center justify-center">
+                    <Lock className="w-8 h-8 text-white" />
+                  </div>
+
+                  <div>
+                    <h2 className="text-2xl font-bold mb-2">Unlock your full letter</h2>
+                    <p className="text-[#CBD5E1] text-sm">
+                      Get instant access to copy, edit, send, or download as PDF
+                    </p>
+                  </div>
+
+                  <div className="py-4">
+                    <div className="text-5xl font-bold bg-gradient-to-r from-[#4F7DF3] to-[#14B8A6] bg-clip-text text-transparent mb-2">
+                      £10
+                    </div>
+                    <div className="text-xs text-[#CBD5E1]">One-time payment • No account required</div>
+                  </div>
+
+                  <ul className="space-y-3 text-left text-sm">
+                    <li className="flex items-center gap-2">
+                      <Check className="w-4 h-4 text-[#14B8A6] flex-shrink-0" />
+                      <span className="text-[#CBD5E1]">Full professionally written letter</span>
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <Check className="w-4 h-4 text-[#14B8A6] flex-shrink-0" />
+                      <span className="text-[#CBD5E1]">Copy and send instantly</span>
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <Check className="w-4 h-4 text-[#14B8A6] flex-shrink-0" />
+                      <span className="text-[#CBD5E1]">Download as PDF</span>
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <Check className="w-4 h-4 text-[#14B8A6] flex-shrink-0" />
+                      <span className="text-[#CBD5E1]">Edit before sending</span>
+                    </li>
+                  </ul>
+
+                  <button
+                    onClick={handleUnlockPayment}
+                    disabled={paymentLoading}
+                    className="w-full px-6 py-4 rounded-xl bg-gradient-to-r from-[#4F7DF3] to-[#14B8A6] hover:shadow-lg hover:shadow-[#4F7DF3]/20 hover:scale-105 transition-all font-semibold flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {paymentLoading ? (
+                      <>
+                        <Sparkles className="w-5 h-5 animate-spin" />
+                        Processing...
+                      </>
+                    ) : (
+                      <>
+                        <Download className="w-5 h-5" />
+                        Unlock Full Letter
+                      </>
+                    )}
+                  </button>
+
+                  <p className="text-xs text-[#CBD5E1]">Secure payment • Instant access</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-[#0D1728] border border-[#4F7DF3]/20 rounded-2xl p-6 mb-6 animate-fade-in">
+            <div className="flex items-start gap-4">
+              <div className="w-10 h-10 bg-[#4F7DF3]/10 rounded-lg flex items-center justify-center flex-shrink-0">
+                <Sparkles className="w-5 h-5 text-[#4F7DF3]" />
+              </div>
+              <div className="flex-1">
+                <h3 className="font-semibold mb-1">Dealing with an ongoing dispute?</h3>
+                <p className="text-sm text-[#94A3B8] mb-3">
+                  Case Membership gives you up to 2 active cases, 5 letters per month, reply analysis, escalation guidance, and a full case dashboard — for £29.99/month.
+                </p>
+                <button
+                  onClick={() => navigate('/pricing')}
+                  className="inline-flex items-center gap-2 text-sm text-[#4F7DF3] hover:text-[#6B95F5] font-medium transition-colors group"
+                >
+                  See membership options
+                  <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="text-center">
+            <button
+              onClick={() => navigate('/')}
+              className="text-[#CBD5E1] hover:text-white transition-colors"
+            >
+              ← Back to home
+            </button>
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}
